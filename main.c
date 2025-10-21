@@ -38,15 +38,23 @@
 #define FLAG_RECEIVER_RECOVERY  BIT3
 #define FLAG_RECEIVER_SHUTDOWN  BIT4
 
+/* Identificador personalizado */
+#define USER_ID "{Lucas-RM86920}"
+
+/* Tags personalizadas */
+#define TAG_GEN USER_ID " [GERADOR]"
+#define TAG_RCV USER_ID " [RECEPTOR]"
+#define TAG_SUP USER_ID " [SUPERVISOR]"
+#define TAG_QUEUE USER_ID " [FILA]"
+#define TAG_WDT USER_ID " [WATCHDOG]"
+#define TAG_MEM USER_ID " [MEMORIA]"
+#define TAG_MAIN USER_ID " [SISTEMA]"
+
 /* ========== VARIÁVEIS GLOBAIS ========== */
 static QueueHandle_t data_queue = NULL;
 static EventGroupHandle_t status_flags = NULL;
 static TaskHandle_t generator_task_handle = NULL;
 static TaskHandle_t receiver_task_handle = NULL;
-
-static const char *TAG_GEN = "[GERADOR]";
-static const char *TAG_RCV = "[RECEPTOR]";
-static const char *TAG_SUP = "[SUPERVISOR]";
 
 /* Heartbeats para monitoramento */
 static volatile uint32_t generator_heartbeat = 0;
@@ -59,21 +67,23 @@ void task_data_generator(void *pvParameters) {
     
     int sequential_value = 0;
     
-    ESP_LOGI(TAG_GEN, "Módulo de Geração iniciado");
+    printf("%s Módulo de Geração iniciado\n", TAG_GEN);
     
     for (;;) {
         sequential_value++;
         
         // Tenta enviar para a fila sem bloquear
         if (xQueueSend(data_queue, &sequential_value, pdMS_TO_TICKS(QUEUE_SEND_TIMEOUT_MS)) == pdTRUE) {
-            printf("%s Valor %d gerado e enviado para a fila\n", TAG_GEN, sequential_value);
+            printf("%s Dado enviado com sucesso!\n", TAG_QUEUE);
+            printf("%s Valor %d gerado e adicionado à fila\n", TAG_GEN, sequential_value);
             
             // Atualiza flag de status
             xEventGroupSetBits(status_flags, FLAG_GENERATOR_OK);
             generator_heartbeat = xTaskGetTickCount();
         } else {
             // Fila cheia - descarta valor mas continua funcionando
-            printf("%s AVISO: Fila cheia! Valor %d descartado\n", TAG_GEN, sequential_value);
+            printf("%s Fila cheia! Dado descartado\n", TAG_QUEUE);
+            printf("%s AVISO: Valor %d descartado (fila lotada)\n", TAG_GEN, sequential_value);
         }
         
         // Reseta o watchdog
@@ -94,14 +104,14 @@ void task_data_receiver(void *pvParameters) {
     int recovery_count = 0;
     int shutdown_count = 0;
     
-    ESP_LOGI(TAG_RCV, "Módulo de Recepção iniciado");
+    printf("%s Módulo de Recepção iniciado\n", TAG_RCV);
     
     for (;;) {
         // Aloca memória dinamicamente para armazenar o valor
         int *received_value = (int *)malloc(sizeof(int));
         
         if (received_value == NULL) {
-            printf("%s ERRO CRÍTICO: Falha na alocação de memória!\n", TAG_RCV);
+            printf("%s ERRO CRÍTICO: Falha na alocação de memória!\n", TAG_MEM);
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -109,7 +119,8 @@ void task_data_receiver(void *pvParameters) {
         // Tenta receber dados da fila com timeout
         if (xQueueReceive(data_queue, received_value, pdMS_TO_TICKS(QUEUE_RECV_TIMEOUT_MS)) == pdTRUE) {
             // Sucesso na recepção
-            printf("%s >>> Transmitindo valor: %d <<<\n", TAG_RCV, *received_value);
+            printf("%s Dado recebido da fila\n", TAG_QUEUE);
+            printf("%s >>> TRANSMITINDO: %d <<<\n", TAG_RCV, *received_value);
             
             // Reset dos contadores
             timeout_count = 0;
@@ -125,19 +136,19 @@ void task_data_receiver(void *pvParameters) {
         } else {
             // Timeout - não recebeu dados
             timeout_count++;
-            printf("%s TIMEOUT: Nenhum dado recebido (%d)\n", TAG_RCV, timeout_count);
+            printf("%s TIMEOUT: Nenhum dado recebido na fila (tentativa %d)\n", TAG_RCV, timeout_count);
             
             // REAÇÃO ESCALONADA
             if (timeout_count >= 1 && timeout_count < MAX_WARNINGS) {
                 // Nível 1: Avisos
                 warning_count++;
-                printf("%s [AVISO %d/%d] Sem dados na fila\n", TAG_RCV, warning_count, MAX_WARNINGS);
+                printf("%s [NIVEL 1 - AVISO %d/%d] Fila sem dados\n", TAG_RCV, warning_count, MAX_WARNINGS);
                 xEventGroupSetBits(status_flags, FLAG_RECEIVER_WARNING);
                 
             } else if (timeout_count >= MAX_WARNINGS && timeout_count < MAX_RECOVERIES) {
                 // Nível 2: Tentativa de recuperação
                 recovery_count++;
-                printf("%s [RECUPERAÇÃO %d/%d] Resetando fila e limpando buffers\n", 
+                printf("%s [NIVEL 2 - RECUPERAÇÃO %d/%d] Resetando fila e limpando buffers\n", 
                        TAG_RCV, recovery_count, MAX_RECOVERIES);
                 xQueueReset(data_queue);
                 xEventGroupSetBits(status_flags, FLAG_RECEIVER_RECOVERY);
@@ -146,14 +157,15 @@ void task_data_receiver(void *pvParameters) {
             } else if (timeout_count >= MAX_RECOVERIES && timeout_count < MAX_SHUTDOWNS) {
                 // Nível 3: Preparação para encerramento
                 shutdown_count++;
-                printf("%s [FALHA CRÍTICA %d/%d] Preparando para encerramento\n", 
+                printf("%s [NIVEL 3 - CRÍTICO %d/%d] Preparando para encerramento\n", 
                        TAG_RCV, shutdown_count, MAX_SHUTDOWNS);
                 xEventGroupSetBits(status_flags, FLAG_RECEIVER_SHUTDOWN);
                 xEventGroupClearBits(status_flags, FLAG_RECEIVER_WARNING | FLAG_RECEIVER_RECOVERY);
                 
             } else {
                 // Nível 4: Encerramento da tarefa
-                printf("%s ENCERRAMENTO: Falha persistente detectada. Finalizando tarefa.\n", TAG_RCV);
+                printf("%s [NIVEL 4 - ENCERRAMENTO] Falha persistente detectada\n", TAG_RCV);
+                printf("%s Finalizando módulo de recepção\n", TAG_RCV);
                 free(received_value);
                 xEventGroupSetBits(status_flags, FLAG_RECEIVER_SHUTDOWN);
                 vTaskDelete(NULL);
@@ -176,7 +188,7 @@ void task_data_receiver(void *pvParameters) {
 void task_supervisor(void *pvParameters) {
     int receiver_restart_count = 0;
     
-    ESP_LOGI(TAG_SUP, "Módulo de Supervisão iniciado");
+    printf("%s Módulo de Supervisão iniciado\n", TAG_SUP);
     
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_PERIOD_MS));
@@ -210,7 +222,7 @@ void task_supervisor(void *pvParameters) {
         size_t free_heap = xPortGetFreeHeapSize();
         size_t min_heap = xPortGetMinimumEverFreeHeapSize();
         printf("%s Memória livre: %u bytes (mínimo histórico: %u bytes)\n", 
-               TAG_SUP, (unsigned int)free_heap, (unsigned int)min_heap);
+               TAG_MEM, (unsigned int)free_heap, (unsigned int)min_heap);
         
         printf("%s ========================================\n\n", TAG_SUP);
         
@@ -242,7 +254,8 @@ void task_supervisor(void *pvParameters) {
             
             // Se falhou muitas vezes, reinicia o sistema
             if (receiver_restart_count >= 5) {
-                printf("%s REINICIALIZAÇÃO: Falhas excessivas detectadas. Reiniciando ESP32...\n", TAG_SUP);
+                printf("%s REINICIALIZAÇÃO CRÍTICA: Falhas excessivas detectadas\n", TAG_WDT);
+                printf("%s Reiniciando ESP32 em 1 segundo...\n", TAG_MAIN);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 esp_restart();
             }
@@ -272,7 +285,7 @@ void task_supervisor(void *pvParameters) {
         
         // Alerta de memória crítica
         if (min_heap < 10 * 1024) {
-            printf("%s ALERTA CRÍTICO: Memória mínima muito baixa!\n", TAG_SUP);
+            printf("%s ALERTA CRÍTICO: Memória mínima muito baixa!\n", TAG_MEM);
         }
     }
 }
@@ -280,22 +293,26 @@ void task_supervisor(void *pvParameters) {
 /* ========== FUNÇÃO PRINCIPAL ========== */
 void app_main(void) {
     printf("\n=================================================\n");
-    printf("Sistema Multitarefa FreeRTOS - ESP32\n");
+    printf("%s Sistema Multitarefa FreeRTOS Iniciando...\n", TAG_MAIN);
     printf("=================================================\n\n");
     
     // Cria a fila de comunicação
     data_queue = xQueueCreate(QUEUE_LENGTH, QUEUE_ITEM_SIZE);
     if (data_queue == NULL) {
-        ESP_LOGE("MAIN", "ERRO: Falha ao criar fila. Reiniciando...");
+        printf("%s ERRO FATAL: Falha ao criar fila\n", TAG_QUEUE);
+        printf("%s Reiniciando sistema...\n", TAG_MAIN);
         esp_restart();
     }
+    printf("%s Fila criada com sucesso (capacidade: %d itens)\n", TAG_QUEUE, QUEUE_LENGTH);
     
     // Cria o Event Group para flags de status
     status_flags = xEventGroupCreate();
     if (status_flags == NULL) {
-        ESP_LOGE("MAIN", "ERRO: Falha ao criar event group. Reiniciando...");
+        printf("%s ERRO FATAL: Falha ao criar event group\n", TAG_MAIN);
+        printf("%s Reiniciando sistema...\n", TAG_MAIN);
         esp_restart();
     }
+    printf("%s Event Group criado com sucesso\n", TAG_MAIN);
     
     // Configura e inicializa o Watchdog Timer
     esp_task_wdt_config_t twdt_config = {
@@ -306,12 +323,14 @@ void app_main(void) {
     
     esp_err_t wdt_result = esp_task_wdt_init(&twdt_config);
     if (wdt_result == ESP_OK) {
-        ESP_LOGI("MAIN", "Watchdog Timer configurado: %d segundos", TWDT_TIMEOUT_S);
+        printf("%s Watchdog Timer configurado: %d segundos\n", TAG_WDT, TWDT_TIMEOUT_S);
     } else {
-        ESP_LOGW("MAIN", "AVISO: Falha ao configurar Watchdog Timer");
+        printf("%s AVISO: Falha ao configurar Watchdog Timer\n", TAG_WDT);
     }
     
     // Cria as tarefas
+    printf("\n%s Criando tarefas do sistema...\n", TAG_MAIN);
+    
     xTaskCreatePinnedToCore(
         task_data_generator,
         "generator_task",
@@ -321,6 +340,7 @@ void app_main(void) {
         &generator_task_handle,
         1  // Core 1
     );
+    printf("%s Tarefa Gerador criada (Core 1, Prioridade %d)\n", TAG_MAIN, GENERATOR_TASK_PRIO);
     
     xTaskCreatePinnedToCore(
         task_data_receiver,
@@ -331,6 +351,7 @@ void app_main(void) {
         &receiver_task_handle,
         1  // Core 1
     );
+    printf("%s Tarefa Receptor criada (Core 1, Prioridade %d)\n", TAG_MAIN, RECEIVER_TASK_PRIO);
     
     xTaskCreatePinnedToCore(
         task_supervisor,
@@ -341,7 +362,8 @@ void app_main(void) {
         NULL,
         0  // Core 0
     );
+    printf("%s Tarefa Supervisor criada (Core 0, Prioridade %d)\n", TAG_MAIN, SUPERVISOR_TASK_PRIO);
     
-    ESP_LOGI("MAIN", "Todas as tarefas criadas com sucesso!");
-    ESP_LOGI("MAIN", "Sistema em execução...\n");
+    printf("\n%s Todas as tarefas criadas com sucesso!\n", TAG_MAIN);
+    printf("%s Sistema em execução...\n\n", TAG_MAIN);
 }
